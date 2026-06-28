@@ -84,7 +84,7 @@ async def run_pipeline(
     
     # Step 3: Cluster
     with console.status("[bold cyan]Clustering papers by methodology...", spinner="dots"):
-        papers, clusters = embedder.cluster(papers)
+        papers, clusters = embedder.cluster(papers, query=query)
     
     result.papers = papers
     result.clusters = clusters

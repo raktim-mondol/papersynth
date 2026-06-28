@@ -74,25 +74,39 @@ def _extract_methodology_keywords_from_abstract(abstract: str, title: str = "") 
 
 
 def _build_paper_text(paper: Paper) -> str:
-    """Build text representation for embedding — abstract + title only (no keyword pollution)."""
-    parts = []
-    if paper.title:
-        parts.append(paper.title)
-    parts.append(paper.abstract)
+    """Build text representation for embedding."""
+    parts = [paper.abstract]
+    if paper.methodology_keywords:
+        parts.append("Methods: " + ", ".join(paper.methodology_keywords))
     if paper.fields_of_study:
         parts.append("Fields: " + ", ".join(paper.fields_of_study))
     return " ".join(parts)
 
 
 def _cluster_keyword_overlap(c1_keywords: list[str], c2_keywords: list[str]) -> float:
-    """Compute Jaccard-like overlap between two clusters' keyword sets."""
+    """
+    Compute overlap between two clusters' keyword sets.
+    Uses overlap coefficient (intersection / min size) instead of Jaccard,
+    which works better for domains where all clusters share core terms.
+    Also considers differentiating keywords — clusters are only merged if
+    they share >70% of their keywords AND have few unique terms.
+    """
     set1 = set(c1_keywords)
     set2 = set(c2_keywords)
     if not set1 or not set2:
         return 0.0
     intersection = set1 & set2
-    union = set1 | set2
-    return len(intersection) / len(union)
+    # Differentiating keywords (unique to each cluster)
+    only_in_1 = set1 - set2
+    only_in_2 = set2 - set1
+    differentiating = len(only_in_1) + len(only_in_2)
+
+    # If clusters have ANY unique keywords, they're distinct topics
+    if differentiating >= 2:
+        return 0.0
+
+    # Overlap coefficient: how much of the smaller set is shared
+    return len(intersection) / min(len(set1), len(set2))
 
 
 class PaperEmbedder:
@@ -127,7 +141,7 @@ class PaperEmbedder:
 
         return papers
 
-    def cluster(self, papers: list[Paper]) -> tuple[list[Paper], list[Cluster]]:
+    def cluster(self, papers: list[Paper], query: str = "") -> tuple[list[Paper], list[Cluster]]:
         """
         Cluster papers by methodology using HDBSCAN.
         Returns updated papers (with cluster_id) and Cluster objects.
@@ -216,6 +230,10 @@ class PaperEmbedder:
         # Merge near-duplicate clusters
         clusters = self._merge_duplicate_clusters(clusters, papers)
 
+        # Remove off-topic clusters (dominant keywords don't match query)
+        if query:
+            clusters = self._filter_offtopic_clusters(clusters, papers, query)
+
         noise_count = sum(1 for l in labels if l == -1)
         logger.info(f"Found {len(clusters)} clusters ({noise_count} noise papers)")
 
@@ -287,3 +305,56 @@ class PaperEmbedder:
             c.cluster_id = i
 
         return clusters
+
+    def _filter_offtopic_clusters(
+        self, clusters: list[Cluster], papers: list[Paper], query: str
+    ) -> list[Cluster]:
+        """
+        Remove clusters whose top keywords don't overlap with query terms.
+        This catches papers that S2 returned as loosely related (e.g., generic ML papers
+        that mention CRISPR in passing but aren't about CRISPR research).
+        """
+        # Extract query-specific terms
+        from .retriever import _extract_query_terms
+        query_terms = _extract_query_terms(query)
+        generic = {"mechanisms", "systems", "approaches", "techniques", "methods",
+                    "frameworks", "strategies", "applications", "tools", "review"}
+        query_specific = {t for t in query_terms if t not in generic}
+
+        if not query_specific:
+            return clusters
+
+        filtered = []
+        removed_cluster_ids = set()
+
+        for cluster in clusters:
+            # Check if any of the cluster's top keywords match query terms
+            cluster_kw = set(kw.lower() for kw in cluster.methodology_keywords)
+            overlap = cluster_kw & query_specific
+
+            # Also check if query terms appear in the cluster label
+            label_lower = cluster.label.lower()
+            label_match = any(term in label_lower for term in query_specific)
+
+            if overlap or label_match:
+                filtered.append(cluster)
+            else:
+                logger.info(
+                    f"Removed off-topic cluster {cluster.cluster_id} "
+                    f"('{cluster.label}', {len(cluster.papers)} papers) "
+                    f"— no overlap with query terms {query_specific}"
+                )
+                removed_cluster_ids.add(cluster.cluster_id)
+                # Mark papers in removed cluster as noise
+                for pid in cluster.papers:
+                    for p in papers:
+                        if p.paper_id == pid:
+                            p.cluster_id = -1
+                            break
+
+        if removed_cluster_ids:
+            # Re-index remaining clusters
+            for i, c in enumerate(filtered):
+                c.cluster_id = i
+
+        return filtered

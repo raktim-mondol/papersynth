@@ -7,6 +7,7 @@ with token-based pagination. Falls back to arXiv API for diversity and coverage.
 
 from __future__ import annotations
 import asyncio
+import re
 import time
 import logging
 import xml.etree.ElementTree as ET
@@ -18,6 +19,29 @@ from .config import Config
 from .models import Paper
 
 logger = logging.getLogger(__name__)
+
+# Stop words to strip from queries when extracting key terms
+_STOP_WORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "are", "was", "were", "be", "been",
+    "being", "have", "has", "had", "do", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "this", "that",
+    "these", "those", "it", "its", "using", "use", "used", "based",
+    "approach", "method", "methods", "analysis", "study", "research",
+    "new", "novel", "paper", "proposed", "via", "through", "between",
+}
+
+
+def _extract_query_terms(query: str) -> list[str]:
+    """Extract meaningful terms from a search query, stripping stop words."""
+    words = re.findall(r'\b[a-z]+\b', query.lower())
+    terms = [w for w in words if w not in _STOP_WORDS and len(w) > 2]
+    # Also extract multi-word terms (bigrams)
+    bigrams = []
+    for i in range(len(words) - 1):
+        if words[i] not in _STOP_WORDS and words[i + 1] not in _STOP_WORDS:
+            bigrams.append(f"{words[i]} {words[i + 1]}")
+    return terms + bigrams
 
 S2_FIELDS = "paperId,title,abstract,year,venue,authors,fieldsOfStudy,citationCount,referenceCount,externalIds,url,openAccessPdf"
 S2_CITATION_FIELDS = "paperId,title,abstract,year,venue,authors,fieldsOfStudy,citationCount,url"
@@ -257,7 +281,7 @@ class PaperRetriever:
         return papers + new_papers
 
     async def retrieve(self, query: str, max_papers: int = None) -> list[Paper]:
-        """Full retrieval pipeline: search S2 bulk + arXiv, then expand."""
+        """Full retrieval pipeline: search S2 bulk + arXiv, filter, expand."""
         max_papers = max_papers or Config.MAX_PAPERS
 
         # Step 1: Search S2 using bulk endpoint
@@ -270,13 +294,49 @@ class PaperRetriever:
         # Merge: S2 papers first, then arXiv (dedup handled by _seen_ids + _arxiv_id_map)
         papers.extend(arxiv_papers)
 
-        # Step 3: Expand with citations (only S2 papers have citations)
+        # Step 3: Filter irrelevant papers (don't match query terms)
+        papers = self._filter_relevant(papers, query)
+
+        # Step 4: Expand with citations (only S2 papers have citations)
         s2_papers = [p for p in papers if not p.paper_id.startswith("arxiv:")]
         if s2_papers and len(papers) < max_papers:
             papers = await self.expand_citations(papers)
 
         logger.info(f"Total unique papers: {len(papers)}")
         return papers[:max_papers]
+
+    def _filter_relevant(self, papers: list[Paper], query: str) -> list[Paper]:
+        """
+        Remove papers that don't contain enough query key terms in title or abstract.
+        Requires at least 1 query-specific term (excluding generic words like 'mechanisms').
+        """
+        query_terms = _extract_query_terms(query)
+        if not query_terms:
+            return papers
+
+        # Separate domain-specific terms from generic ones
+        generic_terms = {"mechanisms", "systems", "approaches", "techniques", "methods",
+                         "frameworks", "strategies", "applications", "tools", "review"}
+        specific_terms = [t for t in query_terms if t not in generic_terms and " " not in t]
+        if not specific_terms:
+            specific_terms = query_terms  # fallback to all terms
+
+        logger.info(f"Relevance filter: specific terms={specific_terms}")
+
+        relevant = []
+        removed = 0
+        for paper in papers:
+            text = f"{paper.title} {paper.abstract}".lower()
+            # Paper must contain at least one domain-specific term
+            matches = sum(1 for term in specific_terms if term in text)
+            if matches >= 1:
+                relevant.append(paper)
+            else:
+                removed += 1
+                logger.debug(f"Filtered out ({matches} matches): {paper.title[:60]}...")
+
+        logger.info(f"Relevance filter: kept {len(relevant)}, removed {removed}")
+        return relevant
 
     async def close(self):
         await self.client.aclose()
