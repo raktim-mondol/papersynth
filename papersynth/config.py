@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 from dotenv import load_dotenv
 
 # Load .env from project root
@@ -28,6 +29,12 @@ class Config:
     CLUSTER_MIN_SAMPLES: int = 2      # HDBSCAN min_samples
     TOP_GAPS: int = 10                # Number of top gaps to report
     TOP_HYPOTHESES: int = 5           # Number of hypotheses to generate
+
+    # S2 search filters (set via CLI or env)
+    YEAR_MIN: Optional[int] = int(os.getenv("PAPERSYNTH_YEAR_MIN", "0")) or None
+    YEAR_MAX: Optional[int] = int(os.getenv("PAPERSYNTH_YEAR_MAX", "0")) or None
+    VENUE_FILTER: str = os.getenv("PAPERSYNTH_VENUE", "")
+    OPEN_ACCESS_ONLY: bool = os.getenv("PAPERSYNTH_OPEN_ACCESS", "").lower() in ("1", "true", "yes")
     
     # Embedding
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"  # Fast + good quality

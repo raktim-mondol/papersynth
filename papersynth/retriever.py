@@ -1,8 +1,8 @@
 """
 Paper retriever — fetches papers from Semantic Scholar and arXiv.
 
-Uses Semantic Scholar's Graph API for paper search + citation/reference expansion.
-Falls back to arXiv API if S2 is rate-limited.
+Uses Semantic Scholar's Graph API **bulk search** endpoint for efficient retrieval
+with token-based pagination. Falls back to arXiv API for diversity and coverage.
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ from .models import Paper
 
 logger = logging.getLogger(__name__)
 
-S2_FIELDS = "paperId,title,abstract,year,venue,authors,fieldsOfStudy,citationCount,referenceCount,externalIds,url"
+S2_FIELDS = "paperId,title,abstract,year,venue,authors,fieldsOfStudy,citationCount,referenceCount,externalIds,url,openAccessPdf"
 S2_CITATION_FIELDS = "paperId,title,abstract,year,venue,authors,fieldsOfStudy,citationCount,url"
 S2_REF_FIELDS = S2_CITATION_FIELDS
 
 
 class PaperRetriever:
     """Fetches and expands a corpus of papers on a given topic."""
-    
+
     def __init__(self):
         self._last_request_time = 0.0
         headers = {"User-Agent": "PaperSynth/0.1 (academic research agent)"}
@@ -45,23 +45,24 @@ class PaperRetriever:
             follow_redirects=True,
         )
         self._seen_ids: set[str] = set()
-        self._rate_delay = max(Config.S2_RATE_LIMIT_DELAY, 4.0)  # Conservative for no-key
+        self._arxiv_id_map: dict[str, str] = {}  # arxiv_id -> s2_paperId
+        self._rate_delay = max(Config.S2_RATE_LIMIT_DELAY, 1.0)
         self._consecutive_failures = 0
-    
+
     async def _rate_limit(self):
         elapsed = time.time() - self._last_request_time
-        delay = self._rate_delay + (self._consecutive_failures * 2)  # Back off on failures
+        delay = self._rate_delay + (self._consecutive_failures * 2)
         if elapsed < delay:
             await asyncio.sleep(delay - elapsed)
         self._last_request_time = time.time()
-    
+
     async def _get_with_retry(self, path: str, params: dict, max_retries: int = 3) -> Optional[dict]:
         for attempt in range(max_retries):
             await self._rate_limit()
             try:
                 resp = await self.client.get(path, params=params)
                 if resp.status_code == 429:
-                    wait = (attempt + 1) * 8  # 8s, 16s, 24s
+                    wait = (attempt + 1) * 8
                     logger.warning(f"Rate limited (attempt {attempt+1}/{max_retries}), waiting {wait}s...")
                     self._consecutive_failures += 1
                     await asyncio.sleep(wait)
@@ -87,7 +88,7 @@ class PaperRetriever:
                     continue
                 return None
         return None
-    
+
     def _to_paper(self, data: dict) -> Optional[Paper]:
         if not data.get("paperId") or not data.get("abstract"):
             return None
@@ -95,7 +96,15 @@ class PaperRetriever:
         if paper_id in self._seen_ids:
             return None
         self._seen_ids.add(paper_id)
+
         authors = [a.get("name", "") for a in (data.get("authors") or [])]
+
+        # Track arXiv ID mapping for dedup
+        ext_ids = data.get("externalIds") or {}
+        arxiv_id = ext_ids.get("ArXiv")
+        if arxiv_id:
+            self._arxiv_id_map[arxiv_id] = paper_id
+
         return Paper(
             paper_id=paper_id,
             title=data.get("title", ""),
@@ -107,7 +116,7 @@ class PaperRetriever:
             citation_count=data.get("citationCount") or 0,
             url=data.get("url"),
         )
-    
+
     def _arxiv_to_paper(self, entry, ns) -> Optional[Paper]:
         title = entry.findtext("atom:title", "", ns).strip().replace("\n", " ")
         abstract = entry.findtext("atom:summary", "", ns).strip().replace("\n", " ")
@@ -116,6 +125,15 @@ class PaperRetriever:
             return None
         # Clean arxiv ID
         raw_id = arxiv_url.split("/abs/")[-1] if "/abs/" in arxiv_url else arxiv_url.split("/")[-1]
+        # Strip version suffix (v1, v2, etc.) for dedup
+        base_id = raw_id.rsplit("v", 1)[0] if "v" in raw_id else raw_id
+
+        # Check if S2 already has this paper (via externalIds.ArXiv mapping)
+        s2_id = self._arxiv_id_map.get(base_id) or self._arxiv_id_map.get(raw_id)
+        if s2_id:
+            logger.debug(f"Skipping arXiv {raw_id} — already in S2 as {s2_id}")
+            return None
+
         paper_id = f"arxiv:{raw_id}"
         if paper_id in self._seen_ids:
             return None
@@ -134,7 +152,7 @@ class PaperRetriever:
             citation_count=0,
             url=arxiv_url,
         )
-    
+
     async def search_arxiv(self, query: str, limit: int = 50) -> list[Paper]:
         """Search arXiv API."""
         logger.info(f"Searching arXiv for: '{query}' (limit={limit})")
@@ -158,32 +176,65 @@ class PaperRetriever:
         except Exception as e:
             logger.warning(f"arXiv search failed: {e}")
         return papers
-    
-    async def search(self, query: str, limit: int = 100) -> list[Paper]:
-        """Search Semantic Scholar for papers."""
-        logger.info(f"Searching S2 for: '{query}' (limit={limit})")
+
+    async def search_bulk(self, query: str, limit: int = 100) -> list[Paper]:
+        """
+        Search Semantic Scholar using the bulk search endpoint.
+
+        Uses /paper/search/bulk with token-based pagination (recommended by S2 docs).
+        Supports year range, venue, and open-access filtering.
+        """
+        logger.info(f"Searching S2 (bulk) for: '{query}' (limit={limit})")
         papers = []
-        offset = 0
-        batch_size = min(limit, 100)
-        while len(papers) < limit and offset < limit:
-            data = await self._get_with_retry("/paper/search", {
-                "query": query,
-                "offset": offset,
-                "limit": batch_size,
-                "fields": S2_FIELDS,
-            })
+
+        # Build query parameters for bulk search
+        params = {
+            "query": query,
+            "fields": S2_FIELDS,
+        }
+
+        # Add optional filters
+        if Config.YEAR_MIN or Config.YEAR_MAX:
+            year_min = str(Config.YEAR_MIN) if Config.YEAR_MIN else ""
+            year_max = str(Config.YEAR_MAX) if Config.YEAR_MAX else ""
+            params["year"] = f"{year_min}-{year_max}"
+
+        if Config.VENUE_FILTER:
+            params["venue"] = Config.VENUE_FILTER
+
+        if Config.OPEN_ACCESS_ONLY:
+            params["openAccessPdf"] = ""
+
+        # Fetch pages using token-based pagination
+        token = None
+        while len(papers) < limit:
+            if token:
+                params["token"] = token
+
+            data = await self._get_with_retry("/paper/search/bulk", params)
             if not data or not data.get("data"):
                 break
+
+            batch_papers = 0
             for item in data["data"]:
                 paper = self._to_paper(item)
                 if paper:
                     papers.append(paper)
-            if not data.get("next"):
+                    batch_papers += 1
+
+            logger.debug(f"  Batch: got {len(data['data'])} raw, {batch_papers} usable (total: {len(papers)})")
+
+            # Token-based pagination: "token" field absent = no more results
+            token = data.get("token")
+            if not token:
                 break
-            offset += batch_size
-        logger.info(f"Found {len(papers)} papers from S2 search")
-        return papers
-    
+
+            # Remove query from params for subsequent requests (S2 only needs token)
+            params.pop("query", None)
+
+        logger.info(f"Found {len(papers)} papers from S2 bulk search")
+        return papers[:limit]
+
     async def expand_citations(self, papers: list[Paper], max_per_paper: int = 3) -> list[Paper]:
         """Expand corpus by fetching references of top papers."""
         logger.info(f"Expanding citations for {len(papers)} papers...")
@@ -204,28 +255,29 @@ class PaperRetriever:
                             paper.references.append(p.paper_id)
         logger.info(f"Expanded with {len(new_papers)} additional papers")
         return papers + new_papers
-    
+
     async def retrieve(self, query: str, max_papers: int = None) -> list[Paper]:
-        """Full retrieval pipeline: search S2 + arXiv, then expand."""
+        """Full retrieval pipeline: search S2 bulk + arXiv, then expand."""
         max_papers = max_papers or Config.MAX_PAPERS
-        
-        # Step 1: Search S2
-        papers = await self.search(query, limit=min(max_papers, 100))
-        
+
+        # Step 1: Search S2 using bulk endpoint
+        papers = await self.search_bulk(query, limit=50)
+
         # Step 2: Always also search arXiv for diversity
-        arxiv_papers = await self.search_arxiv(query, limit=max_papers)
-        
-        # Merge: S2 papers first, then arXiv (dedup handled by _seen_ids)
+        # arXiv dedup happens via _arxiv_id_map built during S2 search
+        arxiv_papers = await self.search_arxiv(query, limit=50)
+
+        # Merge: S2 papers first, then arXiv (dedup handled by _seen_ids + _arxiv_id_map)
         papers.extend(arxiv_papers)
-        
+
         # Step 3: Expand with citations (only S2 papers have citations)
         s2_papers = [p for p in papers if not p.paper_id.startswith("arxiv:")]
         if s2_papers and len(papers) < max_papers:
             papers = await self.expand_citations(papers)
-        
+
         logger.info(f"Total unique papers: {len(papers)}")
         return papers[:max_papers]
-    
+
     async def close(self):
         await self.client.aclose()
         await self.arxiv_client.aclose()

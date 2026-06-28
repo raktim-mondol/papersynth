@@ -290,20 +290,36 @@ def save_results(result: PipelineResult, output_dir: Path = None):
 @click.option("--top-hypotheses", "-h", default=5, help="Number of hypotheses to generate")
 @click.option("--no-hypotheses", is_flag=True, help="Skip hypothesis generation")
 @click.option("--output-dir", "-o", type=click.Path(), help="Output directory for results")
+@click.option("--year-min", type=int, default=None, help="Filter: minimum publication year (e.g. 2020)")
+@click.option("--year-max", type=int, default=None, help="Filter: maximum publication year (e.g. 2025)")
+@click.option("--venue", default=None, help="Filter: publication venue (e.g. 'NeurIPS', 'Nature')")
+@click.option("--open-access", is_flag=True, help="Filter: only papers with open-access PDFs")
 @click.option("--verbose", "-v", is_flag=True, help="Verbose logging")
-def main(query: str, max_papers: int, top_hypotheses: int, no_hypotheses: bool, 
-         output_dir: str, verbose: bool):
+def main(query: str, max_papers: int, top_hypotheses: int, no_hypotheses: bool,
+         output_dir: str, year_min: int, year_max: int, venue: str, open_access: bool,
+         verbose: bool):
     """
     PaperSynth Agent — Literature-to-Hypothesis Pipeline.
-    
+
     Search academic literature, cluster by methodology, detect research gaps,
     and generate novel hypotheses.
-    
+
     Example:
         papersynth "continual learning for neural networks"
         papersynth "CRISPR delivery mechanisms" --max-papers 100
+        papersynth "transformer attention" --year-min 2020 --venue NeurIPS
     """
     setup_logging(verbose)
+
+    # Apply filters to config
+    if year_min:
+        Config.YEAR_MIN = year_min
+    if year_max:
+        Config.YEAR_MAX = year_max
+    if venue:
+        Config.VENUE_FILTER = venue
+    if open_access:
+        Config.OPEN_ACCESS_ONLY = True
     
     # Validate config
     errors = Config.validate()

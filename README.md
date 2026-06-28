@@ -20,7 +20,7 @@
 
 Given a research topic, PaperSynth:
 
-1. **Fetches** papers from [Semantic Scholar](https://www.semanticscholar.org/) and [arXiv](https://arxiv.org/)
+1. **Fetches** papers from [Semantic Scholar](https://www.semanticscholar.org/) (bulk search, ~1000/request) and [arXiv](https://arxiv.org/), with automatic deduplication
 2. **Embeds** papers using sentence-transformers and **clusters** them by methodology
 3. **Builds** a citation-methodology knowledge graph
 4. **Detects** research gaps across 4 strategies
@@ -197,6 +197,10 @@ Options:
   -n, --max-papers N       Maximum papers to fetch (default: 200)
   -h, --top-hypotheses N   Number of hypotheses to generate (default: 5)
   --no-hypotheses          Skip hypothesis generation (faster)
+  --year-min YEAR          Filter: minimum publication year (e.g. 2020)
+  --year-max YEAR          Filter: maximum publication year (e.g. 2025)
+  --venue NAME             Filter: publication venue (e.g. 'NeurIPS', 'Nature')
+  --open-access            Filter: only papers with open-access PDFs
   -o, --output-dir PATH    Custom output directory
   -v, --verbose            Enable debug logging
   --help                   Show help message
@@ -205,27 +209,14 @@ Options:
 ### Example Session
 
 ```bash
+# Basic search
 $ ./papersynth "continual learning catastrophic forgetting" -n 40 -h 2
 
-╭────────────────────────────── PaperSynth Agent ──────────────────────────────╮
-│ continual learning catastrophic forgetting                                    │
-╰───────────────── Literature → Clusters → Gaps → Hypotheses ──────────────────╯
-✓ Fetched 40 papers
-✓ Extracted methodology keywords
-✓ Generated embeddings
-✓ Found 2 methodology clusters
-✓ Built graph: 42 nodes, 583 edges
-✓ Detected 4 research gaps
-✓ Generated 2 hypotheses
+# Search with filters (recent papers from top venues)
+$ ./papersynth "transformer attention" --year-min 2020 --venue NeurIPS --open-access
 
-Pipeline completed in 35.5s
-
-──────────────────────── Generated Research Hypotheses ─────────────────────────
-╭─ Hypothesis 1: Prompt-based Continual Learning for Decentralized Federated ─╮
-│ Statement: Integrating prompt-based continual learning into a federated     │
-│ learning framework will significantly reduce catastrophic forgetting...      │
-│ Scores: feasibility=0.70 | novelty=0.90 | impact=0.85 | overall=0.81        │
-╰──────────────────────────────────────────────────────────────────────────────╯
+# Fast mode (skip LLM, recent papers only)
+$ ./papersynth "CRISPR delivery mechanisms" --no-hypotheses --year-min 2022
 ```
 
 ---
@@ -246,6 +237,10 @@ All settings are in `papersynth/config.py` and can be overridden via environment
 | `TOP_HYPOTHESES` | `5` | Number of hypotheses to generate |
 | `UMAP_N_COMPONENTS` | `10` | UMAP target dimensions |
 | `S2_RATE_LIMIT_DELAY` | `1.0` | Seconds between S2 API calls |
+| `YEAR_MIN` | — | Minimum publication year filter |
+| `YEAR_MAX` | — | Maximum publication year filter |
+| `VENUE_FILTER` | — | Publication venue filter |
+| `OPEN_ACCESS_ONLY` | `false` | Only papers with open-access PDFs |
 
 ---
 
@@ -331,7 +326,7 @@ classDiagram
 
     class PaperRetriever {
         +retrieve(query, max_papers) list~Paper~
-        +search(query, limit) list~Paper~
+        +search_bulk(query, limit) list~Paper~
         +search_arxiv(query, limit) list~Paper~
         +expand_citations(papers) list~Paper~
     }
