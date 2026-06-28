@@ -230,9 +230,9 @@ class PaperEmbedder:
         # Merge near-duplicate clusters
         clusters = self._merge_duplicate_clusters(clusters, papers)
 
-        # Remove off-topic clusters (dominant keywords don't match query)
+        # Score cluster relevance to query (but don't remove — HDBSCAN's density is the real signal)
         if query:
-            clusters = self._filter_offtopic_clusters(clusters, papers, query)
+            self._score_cluster_relevance(clusters, papers, query)
 
         noise_count = sum(1 for l in labels if l == -1)
         logger.info(f"Found {len(clusters)} clusters ({noise_count} noise papers)")
@@ -306,55 +306,41 @@ class PaperEmbedder:
 
         return clusters
 
-    def _filter_offtopic_clusters(
+    def _score_cluster_relevance(
         self, clusters: list[Cluster], papers: list[Paper], query: str
-    ) -> list[Cluster]:
+    ) -> None:
         """
-        Remove clusters whose top keywords don't overlap with query terms.
-        This catches papers that S2 returned as loosely related (e.g., generic ML papers
-        that mention CRISPR in passing but aren't about CRISPR research).
+        Score each cluster's relevance to the query (0-1).
+        Stores score in cluster.description prefix for downstream use.
+        Does NOT remove clusters — HDBSCAN density is the primary signal.
         """
-        # Extract query-specific terms
         from .retriever import _extract_query_terms
         query_terms = _extract_query_terms(query)
         generic = {"mechanisms", "systems", "approaches", "techniques", "methods",
-                    "frameworks", "strategies", "applications", "tools", "review"}
-        query_specific = {t for t in query_terms if t not in generic}
+                    "frameworks", "strategies", "applications", "tools", "review",
+                    "deep", "learning", "based", "using", "model", "models"}
+        query_specific = {t for t in query_terms if t not in generic and len(t) > 3}
 
         if not query_specific:
-            return clusters
-
-        filtered = []
-        removed_cluster_ids = set()
+            return
 
         for cluster in clusters:
-            # Check if any of the cluster's top keywords match query terms
-            cluster_kw = set(kw.lower() for kw in cluster.methodology_keywords)
-            overlap = cluster_kw & query_specific
+            # Count how many papers in the cluster mention query terms in their abstract
+            matches = 0
+            for pid in cluster.papers:
+                for p in papers:
+                    if p.paper_id == pid:
+                        text = f"{p.title} {p.abstract}".lower()
+                        if any(term in text for term in query_specific):
+                            matches += 1
+                        break
 
-            # Also check if query terms appear in the cluster label
-            label_lower = cluster.label.lower()
-            label_match = any(term in label_lower for term in query_specific)
+            relevance = matches / max(len(cluster.papers), 1)
+            cluster.description = f"[relevance={relevance:.2f}] {cluster.description}"
 
-            if overlap or label_match:
-                filtered.append(cluster)
-            else:
+            if relevance < 0.3:
                 logger.info(
-                    f"Removed off-topic cluster {cluster.cluster_id} "
-                    f"('{cluster.label}', {len(cluster.papers)} papers) "
-                    f"— no overlap with query terms {query_specific}"
+                    f"Low-relevance cluster {cluster.cluster_id} "
+                    f"('{cluster.label}', {len(cluster.papers)} papers, "
+                    f"relevance={relevance:.2f})"
                 )
-                removed_cluster_ids.add(cluster.cluster_id)
-                # Mark papers in removed cluster as noise
-                for pid in cluster.papers:
-                    for p in papers:
-                        if p.paper_id == pid:
-                            p.cluster_id = -1
-                            break
-
-        if removed_cluster_ids:
-            # Re-index remaining clusters
-            for i, c in enumerate(filtered):
-                c.cluster_id = i
-
-        return filtered
