@@ -166,8 +166,8 @@ async def main():
             print(f"ERROR: {r['error']}")
         else:
             print(f"{r['papers_after_filter']}p → {r['clusters']}c, {r['gaps']}g [{r['elapsed_s']}s]")
-        # Brief pause between queries to avoid rate limiting
-        await asyncio.sleep(1)
+        # Pause between queries to avoid rate limiting (S2 API: 1 req/sec)
+        await asyncio.sleep(3)
 
     # Save raw results
     out_path = Path(__file__).parent.parent / "output" / "benchmark_50.json"
