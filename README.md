@@ -141,54 +141,57 @@ graph LR
 - [DeepSeek API key](https://platform.deepseek.com/) (for hypothesis generation)
 - [Semantic Scholar API key](https://www.semanticscholar.org/product/api#api-key-form) (optional, for higher rate limits)
 
-### Installation
+### Step 1: Clone & Install
 
 ```bash
-# Clone the repository
 git clone https://github.com/raktim-mondol/papersynth.git
 cd papersynth
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -e .
-
-# Configure API keys
-cp .env.example .env
-# Edit .env with your keys:
-#   DEEPSEEK_API_KEY=sk-...
-#   S2_API_KEY=s2k-...  (optional)
+bash install.sh
 ```
 
-### Basic Usage
+The install script creates a virtual environment, installs all dependencies, and creates a `papersynth` wrapper script.
+
+### Step 2: Configure API Keys
 
 ```bash
-# Full pipeline (search → cluster → gaps → hypotheses)
-papersynth "continual learning for neural networks"
+# Edit .env with your keys
+nano .env
+```
+
+Add your keys:
+```
+DEEPSEEK_API_KEY=***  (optional, for higher rate limits)
+S2_API_KEY=*** papersynth --help
+
+# Full pipeline with hypotheses
+./papersynth "continual learning for neural networks"
 
 # Customize limits
-papersynth "CRISPR delivery mechanisms" --max-papers 100 --top-hypotheses 5
+./papersynth "CRISPR delivery mechanisms" -n 100 -h 5
 
 # Fast mode (skip LLM hypothesis generation)
-papersynth "single cell RNA sequencing" --no-hypotheses
+./papersynth "single cell RNA sequencing" --no-hypotheses
 
 # Verbose debug output
-papersynth "federated learning privacy" -v
+./papersynth "federated learning privacy" -v
+```
+
+### Alternative: Activate venv first
+
+```bash
+source .venv/bin/activate
+papersynth "your research query"
 ```
 
 ---
 
-## 📖 Detailed Usage
-
-### Command-Line Options
+## 📖 Command-Line Reference
 
 ```
 papersynth <QUERY> [OPTIONS]
 
 Arguments:
-  QUERY                    Research topic or question
+  QUERY                    Research topic or question (required)
 
 Options:
   -n, --max-papers N       Maximum papers to fetch (default: 200)
@@ -202,20 +205,27 @@ Options:
 ### Example Session
 
 ```bash
-$ papersynth "continual learning catastrophic forgetting" --max-papers 80
+$ ./papersynth "continual learning catastrophic forgetting" -n 40 -h 2
 
 ╭────────────────────────────── PaperSynth Agent ──────────────────────────────╮
 │ continual learning catastrophic forgetting                                    │
 ╰───────────────── Literature → Clusters → Gaps → Hypotheses ──────────────────╯
-✓ Fetched 80 papers
+✓ Fetched 40 papers
 ✓ Extracted methodology keywords
 ✓ Generated embeddings
-✓ Found 7 methodology clusters
-✓ Built graph: 87 nodes, 346 edges
-✓ Detected 10 research gaps
-✓ Generated 3 hypotheses
+✓ Found 2 methodology clusters
+✓ Built graph: 42 nodes, 583 edges
+✓ Detected 4 research gaps
+✓ Generated 2 hypotheses
 
-Pipeline completed in 87.2s
+Pipeline completed in 35.5s
+
+──────────────────────── Generated Research Hypotheses ─────────────────────────
+╭─ Hypothesis 1: Prompt-based Continual Learning for Decentralized Federated ─╮
+│ Statement: Integrating prompt-based continual learning into a federated     │
+│ learning framework will significantly reduce catastrophic forgetting...      │
+│ Scores: feasibility=0.70 | novelty=0.90 | impact=0.85 | overall=0.81        │
+╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
 ---
@@ -246,6 +256,8 @@ papersynth/
 ├── README.md                 # This file
 ├── LICENSE                   # MIT License
 ├── pyproject.toml            # Package configuration
+├── install.sh                # One-step installer
+├── papersynth.sh             # Wrapper script (no venv activation needed)
 ├── .env.example              # API key template
 ├── .gitignore
 ├── docs/
@@ -253,6 +265,7 @@ papersynth/
 │   └── modules.md            # Module API reference
 ├── papersynth/
 │   ├── __init__.py           # Package metadata
+│   ├── __main__.py           # python -m papersynth support
 │   ├── cli.py                # CLI entry point + orchestrator
 │   ├── config.py             # Configuration management
 │   ├── models.py             # Data models (Paper, Cluster, Gap, Hypothesis)
@@ -471,12 +484,9 @@ pytest tests/ -v
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
-# Development setup
 git clone https://github.com/raktim-mondol/papersynth.git
 cd papersynth
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+bash install.sh
 ```
 
 ---
