@@ -78,6 +78,13 @@ class GapDetector:
             if not shared_keywords:
                 continue
             
+            # Skip self-similar clusters (>60% keyword overlap — these are the same topic)
+            all_keywords = set(profile1.keys()) | set(profile2.keys())
+            jaccard = len(shared_keywords) / len(all_keywords) if all_keywords else 0
+            if jaccard > 0.6:
+                logger.debug(f"Skipping self-similar pair ({c1_id}, {c2_id}): Jaccard={jaccard:.2f}")
+                continue
+            
             # How much overlap?
             overlap_strength = sum(
                 min(profile1.get(kw, 0), profile2.get(kw, 0))

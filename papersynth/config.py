@@ -25,7 +25,7 @@ class Config:
     
     # Pipeline parameters
     MAX_PAPERS: int = 200             # Max papers to fetch
-    CLUSTER_MIN_SIZE: int = 3         # Min papers per cluster
+    CLUSTER_MIN_SIZE: int = 5         # Min papers per cluster
     CLUSTER_MIN_SAMPLES: int = 2      # HDBSCAN min_samples
     TOP_GAPS: int = 10                # Number of top gaps to report
     TOP_HYPOTHESES: int = 5           # Number of hypotheses to generate
